@@ -1,2 +1,4 @@
 .venv
 .samsung_tv_tokens.json
+.build
+build
