@@ -355,16 +355,16 @@ final class AppViewModel: ObservableObject {
         }
 
         if label == "sleep" {
-            let press = sleepWakeMode.press ?? .long
-            runIPCommand("\(label) automation: \(sleepWakeMode.label)") { ip in
-                try await self.controller.power(ip: ip, press: press)
+            runIPCommand("\(label) automation: tester off") { ip in
+                try await self.controller.testerOff(ip: ip)
             }
-        } else {
-            runIPCommand("\(label) automation: on --mac") { ip in
-                let mac = self.manualMac.trimmingCharacters(in: .whitespacesAndNewlines)
-                let macValue = mac.isEmpty ? nil : mac
-                return try await self.controller.on(ip: ip, mac: macValue, wolPort: 9)
-            }
+            return
+        }
+
+        runIPCommand("\(label) automation: tester on") { ip in
+            let mac = self.manualMac.trimmingCharacters(in: .whitespacesAndNewlines)
+            let macValue = mac.isEmpty ? nil : mac
+            return try await self.controller.testerOn(ip: ip, mac: macValue, wolPort: 9)
         }
     }
 

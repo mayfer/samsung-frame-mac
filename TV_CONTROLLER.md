@@ -52,11 +52,10 @@ User selects one mode:
 
 Behavior:
 - On Mac sleep:
-  - Sends selected power press variant.
+  - Uses the same logic as `Testers > Off`.
 - On Mac wake:
-  - Uses `on --mac` semantics:
-    - If TV online + standby -> short power
-    - If TV offline -> WOL using MAC
+  - Uses the same logic as `Testers > On`.
+- `TV controller off` disables sleep/wake actions.
 
 ## Manual Commands
 
@@ -93,6 +92,8 @@ Available manual actions include:
 - If `standby`: no-op.
 - If `on`/`active`/unknown: short power.
 - Any other explicit state: no-op.
+
+Sleep/wake automation now reuses these exact tester paths.
 
 ## Reset Behavior
 
