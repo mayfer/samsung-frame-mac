@@ -8,10 +8,10 @@ enum SleepWakePowerMode: String, CaseIterable {
 
     var label: String {
         switch self {
-        case .off: return "TV controller off"
-        case .short: return "Sleep: power (short)"
-        case .medium: return "Sleep: power (medium)"
-        case .long: return "Sleep: power (long)"
+        case .off: return "Off"
+        case .short: return "Short press"
+        case .medium: return "Medium press"
+        case .long: return "Long press"
         }
     }
 
@@ -47,6 +47,7 @@ final class AppViewModel: ObservableObject {
     @Published var isScanning = false
     @Published var isRunningCommand = false
     @Published var showManualEntry = false
+    @Published var showDebugTools = false
     @Published var bannerText = "Ready"
     @Published var bannerKind: BannerKind = .info
     @Published var commandToken: Int = 0
@@ -84,7 +85,7 @@ final class AppViewModel: ObservableObject {
             if self.selectedIP.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 self.scanForTVs()
             } else {
-                self.setBanner("Using saved TV selection. Search only if you want to refresh discovery.", kind: .info)
+                self.discoveredTVs = self.devicesIncludingSavedSelection(from: self.discoveredTVs)
             }
         }
     }
@@ -100,10 +101,7 @@ final class AppViewModel: ObservableObject {
         let resolvedMac = discoveredMac ?? cachedMac ?? manualMac.trimmingCharacters(in: .whitespacesAndNewlines)
         let macSuffix = resolvedMac.isEmpty ? "" : "  MAC: \(resolvedMac)"
 
-        if discoveredTVs.contains(where: { $0.ipAddress == ip }) {
-            return "Selected: \(ip)\(macSuffix)"
-        }
-        return "Saved selection: \(ip)\(macSuffix)"
+        return "Selected: \(ip)\(macSuffix)"
     }
 
     func scanForTVs() {
@@ -116,10 +114,10 @@ final class AppViewModel: ObservableObject {
             guard let self else { return }
             self.isScanning = false
             let deduped = self.normalizedDevices(devices)
-            self.discoveredTVs = deduped
+            self.discoveredTVs = self.devicesIncludingSavedSelection(from: deduped)
 
             if deduped.isEmpty {
-                self.setBanner("No TVs found. Use 'Enter manually' to provide IP/MAC.", kind: .warning)
+                self.setBanner("No TVs found. Use 'Enter manually' if needed.", kind: .warning)
                 return
             }
 
@@ -146,6 +144,7 @@ final class AppViewModel: ObservableObject {
         if !resolvedMac.isEmpty {
             macCache.set(resolvedMac, for: ip)
         }
+        discoveredTVs = devicesIncludingSavedSelection(from: discoveredTVs)
 
         applySleepWakeState()
         setBanner("Selected TV: \(ip)", kind: .success)
@@ -338,7 +337,6 @@ final class AppViewModel: ObservableObject {
             }
         }
 
-        // Hard UI watchdog: never let "Running..." persist past 3s.
         Task {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             await MainActor.run {
@@ -355,13 +353,14 @@ final class AppViewModel: ObservableObject {
         }
 
         if label == "sleep" {
-            runIPCommand("\(label) automation: tester off") { ip in
-                try await self.controller.testerOff(ip: ip)
+            let press = sleepWakeMode.press ?? .click
+            runIPCommand("\(label) automation") { ip in
+                try await self.controller.testerOff(ip: ip, press: press)
             }
             return
         }
 
-        runIPCommand("\(label) automation: tester on") { ip in
+        runIPCommand("\(label) automation") { ip in
             let mac = self.manualMac.trimmingCharacters(in: .whitespacesAndNewlines)
             let macValue = mac.isEmpty ? nil : mac
             return try await self.controller.testerOn(ip: ip, mac: macValue, wolPort: 9)
@@ -401,6 +400,31 @@ final class AppViewModel: ObservableObject {
         return result
     }
 
+    private func devicesIncludingSavedSelection(from devices: [DetectedTV]) -> [DetectedTV] {
+        let selected = selectedIP.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !selected.isEmpty else { return devices }
+        if devices.contains(where: { $0.ipAddress == selected }) {
+            return devices
+        }
+
+        let cachedMac = macCache.get(for: selected)
+        let manual = manualMac.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedMac = cachedMac ?? (manual.isEmpty ? nil : manual)
+
+        var result = devices
+        result.append(
+            DetectedTV(
+                name: "Saved TV",
+                hostName: "saved.local",
+                ipAddress: selected,
+                macAddress: resolvedMac,
+                port: 8002,
+                serviceType: "saved"
+            )
+        )
+        return result.sorted { $0.ipAddress < $1.ipAddress }
+    }
+
     private func setBanner(_ text: String, kind: BannerKind) {
         bannerText = text
         bannerKind = kind
@@ -410,7 +434,7 @@ final class AppViewModel: ObservableObject {
         seconds: Double,
         operation: @escaping () async throws -> T
     ) async throws -> T {
-        return try await withThrowingTaskGroup(of: T.self) { group in
+        try await withThrowingTaskGroup(of: T.self) { group in
             group.addTask {
                 try await operation()
             }
@@ -432,14 +456,14 @@ struct ContentView: View {
 
     private var bannerColor: Color {
         switch model.bannerKind {
-        case .info: return Color.blue.opacity(0.15)
-        case .success: return Color.green.opacity(0.15)
-        case .warning: return Color.yellow.opacity(0.15)
-        case .error: return Color.red.opacity(0.15)
+        case .info: return Color.blue.opacity(0.16)
+        case .success: return Color.green.opacity(0.18)
+        case .warning: return Color.orange.opacity(0.18)
+        case .error: return Color.red.opacity(0.18)
         }
     }
 
-    private var commandButtonsDisabled: Bool {
+    private var disabled: Bool {
         model.isRunningCommand || model.isScanning
     }
 
@@ -450,39 +474,55 @@ struct ContentView: View {
                     Button("Search for Samsung Frame TVs") {
                         model.scanForTVs()
                     }
+                    .buttonStyle(.borderedProminent)
                     .disabled(model.isScanning)
 
-                    Button(model.showManualEntry ? "Hide manual entry" : "Enter manually") {
+                    Button(model.showManualEntry ? "Hide Manual Entry" : "Enter Manually") {
                         model.showManualEntry.toggle()
                     }
+                    .buttonStyle(.bordered)
                     .disabled(model.isRunningCommand)
 
                     Spacer()
 
-                    Text(model.selectionSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Menu("Debug") {
+                        Toggle("Show Debug Tools", isOn: $model.showDebugTools)
+                        Divider()
+                        Button("Reset Saved Data", role: .destructive) {
+                            model.resetSavedData()
+                        }
+                    }
+                    .disabled(model.isRunningCommand)
                 }
 
                 HStack(spacing: 10) {
                     if model.isScanning {
                         ProgressView()
+                            .controlSize(.small)
                     }
                     Text(model.bannerText)
                         .font(.caption)
                         .lineLimit(2)
+                    Spacer()
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 8)
                 .background(bannerColor)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
 
+                HStack {
+                    Text(model.selectionSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+
                 GroupBox("Discovery") {
                     if model.discoveredTVs.isEmpty {
                         Text(model.isScanning ? "Searching..." : "No TVs discovered yet")
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.top, 4)
+                            .padding(.vertical, 4)
                     } else {
                         List(model.discoveredTVs, selection: Binding(
                             get: { model.selectedIP.isEmpty ? nil : model.selectedIP },
@@ -510,55 +550,28 @@ struct ContentView: View {
 
                 GroupBox("Sleep/Wake Automation") {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Sleep uses selected power press. Wake uses on --mac.")
+                        Text("Power button behavior to turn off: Short press / Medium press / Long press")
                             .font(.subheadline)
-
-                        Picker("Sleep/wake mode", selection: Binding(
-                            get: { model.sleepWakeMode },
-                            set: { model.setSleepWakeMode($0) }
-                        )) {
-                            ForEach(SleepWakePowerMode.allCases, id: \.rawValue) { mode in
-                                Text(mode.label).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                        .frame(maxWidth: 260)
-
-                        Text("TV controller off disables sleep/wake actions.")
-                            .font(.caption)
                             .foregroundStyle(.secondary)
+
+                        HStack(spacing: 8) {
+                            Text("Power button behavior to turn off:")
+                                .font(.subheadline)
+                            Picker("Power button behavior to turn off", selection: Binding(
+                                get: { model.sleepWakeMode },
+                                set: { model.setSleepWakeMode($0) }
+                            )) {
+                                ForEach(SleepWakePowerMode.allCases, id: \.rawValue) { mode in
+                                    Text(mode.label).tag(mode)
+                                }
+                            }
+                            .pickerStyle(.menu)
+                            .labelsHidden()
+                            .frame(minWidth: 320, maxWidth: 320)
+                            Spacer()
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 2)
-                }
-
-                GroupBox("Manual Commands") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                            Button("State") { model.triggerState() }
-                            Button("Pair") { model.triggerPair() }
-                            Button("To HDMI") { model.triggerToHDMI() }
-                            Button("Art Mode On") { model.triggerArtModeOn() }
-                            Button("Art Mode Off") { model.triggerArtModeOff() }
-                            Button("Power") { model.triggerPower() }
-                            Button("Power Medium") { model.triggerPowerMedium() }
-                            Button("Power Long") { model.triggerPowerLong() }
-                            Button("On (WOL/state)") { model.triggerOn() }
-                            Button("Wake (WOL only)") { model.triggerWakeWOLOnly() }
-                            Button("Off (power --long)") { model.triggerPowerLong() }
-                            Button("KEY_POWEROFF") { model.triggerKeyPowerOff() }
-                        }
-                        .disabled(commandButtonsDisabled)
-                    }
-                    .padding(.top, 2)
-                }
-
-                GroupBox("Testers") {
-                    HStack(spacing: 8) {
-                        Button("On") { model.triggerTesterOn() }
-                        Button("Off") { model.triggerTesterOff() }
-                    }
-                    .disabled(commandButtonsDisabled)
                     .padding(.top, 2)
                 }
 
@@ -572,7 +585,7 @@ struct ContentView: View {
                                 Button("Use IP") {
                                     model.useManualIP()
                                 }
-                                .disabled(commandButtonsDisabled)
+                                .disabled(disabled)
                             }
 
                             HStack(spacing: 8) {
@@ -582,18 +595,46 @@ struct ContentView: View {
                                 Button("Save MAC") {
                                     model.saveManualMac()
                                 }
-                                .disabled(commandButtonsDisabled)
-
-                                Button("Reset Saved Data") {
-                                    model.resetSavedData()
-                                }
-                                .disabled(commandButtonsDisabled)
+                                .disabled(disabled)
                             }
+                        }
+                        .padding(.top, 2)
+                    }
+                }
 
-                            Text("MAC is required to power on when TV is fully off unless ARP already has it.")
+                if model.showDebugTools {
+                    GroupBox("Debug Tools") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Advanced controls for validation and troubleshooting.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
+
+                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                                Button("State") { model.triggerState() }
+                                Button("Pair") { model.triggerPair() }
+                                Button("To HDMI") { model.triggerToHDMI() }
+                                Button("Art Mode On") { model.triggerArtModeOn() }
+                                Button("Art Mode Off") { model.triggerArtModeOff() }
+                                Button("Power") { model.triggerPower() }
+                                Button("Power Medium") { model.triggerPowerMedium() }
+                                Button("Power Long") { model.triggerPowerLong() }
+                                Button("On (WOL/state)") { model.triggerOn() }
+                                Button("Wake (WOL only)") { model.triggerWakeWOLOnly() }
+                                Button("Off (power --long)") { model.triggerPowerLong() }
+                                Button("KEY_POWEROFF") { model.triggerKeyPowerOff() }
+                            }
+                            .disabled(disabled)
+
+                            Divider()
+
+                            HStack(spacing: 8) {
+                                Text("Testers")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Button("On") { model.triggerTesterOn() }
+                                Button("Off") { model.triggerTesterOff() }
+                            }
+                            .disabled(disabled)
                         }
                         .padding(.top, 2)
                     }
@@ -601,6 +642,6 @@ struct ContentView: View {
             }
             .padding(16)
         }
-        .frame(minWidth: 760, minHeight: 620)
+        .frame(minWidth: 780, minHeight: 620)
     }
 }

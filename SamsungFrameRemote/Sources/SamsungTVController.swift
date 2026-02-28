@@ -122,7 +122,7 @@ actor SamsungTVController {
         return "TV is offline. Sent Wake-on-LAN packet to \(finalMac)."
     }
 
-    func testerOff(ip: String) async throws -> String {
+    func testerOff(ip: String, press: PowerPress = .click) async throws -> String {
         guard let deviceInfo = await fetchTVDeviceInfo(ip: ip) else {
             return "TV is offline. No action taken."
         }
@@ -133,8 +133,17 @@ actor SamsungTVController {
         }
 
         if powerState == "on" || powerState == "active" || powerState == nil {
-            try await sendRemoteKeys(ip: ip, keys: ["KEY_POWER"])
-            return "TV is online (\(powerState ?? "unknown")). Sent short power press."
+            switch press {
+            case .click:
+                try await sendRemoteKeys(ip: ip, keys: ["KEY_POWER"])
+                return "TV is online (\(powerState ?? "unknown")). Sent short power press."
+            case .medium:
+                try await sendHeldPower(ip: ip, holdMilliseconds: 1500)
+                return "TV is online (\(powerState ?? "unknown")). Sent medium power press."
+            case .long:
+                try await sendHeldPower(ip: ip, holdMilliseconds: 3200)
+                return "TV is online (\(powerState ?? "unknown")). Sent long power press."
+            }
         }
 
         return "TV power state is \(powerState!). No action taken."

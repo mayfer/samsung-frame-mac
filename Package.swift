@@ -2,17 +2,20 @@
 import PackageDescription
 
 let package = Package(
-    name: "frame-mac-app",
+    name: "samsung-frame-remote",
     platforms: [
         .macOS(.v13)
     ],
     products: [
-        .executable(name: "FrameMacApp", targets: ["FrameMacApp"])
+        .executable(name: "SamsungFrameRemote", targets: ["SamsungFrameRemote"])
     ],
     targets: [
         .executableTarget(
-            name: "FrameMacApp",
-            path: "FrameMacApp/Sources"
+            name: "SamsungFrameRemote",
+            path: "SamsungFrameRemote/Sources",
+            resources: [
+                .copy("SamsungFrameRemote.sdef")
+            ]
         )
     ]
 )

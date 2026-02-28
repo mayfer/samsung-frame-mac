@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE dictionary SYSTEM "file://localhost/System/Library/DTDs/sdef.dtd">
+<dictionary title="Samsung Frame Remote Scripting Dictionary">
+    <suite name="Samsung Frame Remote Suite" code="Fram" description="Power controls for Samsung Frame TV">
+        <command name="On" code="FramOnnn" description="Turn the selected TV on.">
+            <cocoa class="OnScriptCommand"/>
+        </command>
+        <command name="Off" code="FramOfff" description="Turn the selected TV off.">
+            <cocoa class="OffScriptCommand"/>
+        </command>
+    </suite>
+</dictionary>

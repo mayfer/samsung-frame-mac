@@ -6,8 +6,18 @@ final class MACCacheStore {
     init() {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.homeDirectoryForCurrentUser
-        let dir = appSupport.appendingPathComponent("FrameMacApp", isDirectory: true)
-        self.fileURL = dir.appendingPathComponent("mac_cache.json")
+        let newDir = appSupport.appendingPathComponent("Samsung Frame Remote", isDirectory: true)
+        let legacyDir = appSupport.appendingPathComponent("FrameMacApp", isDirectory: true)
+        let newURL = newDir.appendingPathComponent("mac_cache.json")
+        let legacyURL = legacyDir.appendingPathComponent("mac_cache.json")
+
+        if !FileManager.default.fileExists(atPath: newURL.path),
+           FileManager.default.fileExists(atPath: legacyURL.path) {
+            try? FileManager.default.createDirectory(at: newDir, withIntermediateDirectories: true)
+            try? FileManager.default.copyItem(at: legacyURL, to: newURL)
+        }
+
+        self.fileURL = newURL
     }
 
     func get(for ip: String) -> String? {

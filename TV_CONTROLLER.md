@@ -1,6 +1,6 @@
 # TV Controller Logic
 
-This document describes the current Samsung Frame TV control behavior implemented by `FrameMacApp`.
+This document describes the current Samsung Frame TV control behavior implemented by `Samsung Frame Remote`.
 
 ## Scope
 
@@ -35,7 +35,7 @@ The app combines:
   2. Per-IP MAC cache
   3. Manual MAC input
 - Per-IP MAC cache file:
-  - `~/Library/Application Support/FrameMacApp/mac_cache.json`
+  - `~/Library/Application Support/Samsung Frame Remote/mac_cache.json`
 
 ## Global Timeout Behavior
 
