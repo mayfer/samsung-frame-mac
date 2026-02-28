@@ -452,7 +452,7 @@ final class AppViewModel: ObservableObject {
 }
 
 struct ContentView: View {
-    @StateObject private var model = AppViewModel()
+    @ObservedObject var model: AppViewModel
 
     private var bannerColor: Color {
         switch model.bannerKind {
@@ -573,6 +573,11 @@ struct ContentView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 2)
+                }
+
+                GroupBox("Global Shortcut Automation") {
+                    ShortcutSettingsView()
+                        .padding(.top, 2)
                 }
 
                 if model.showManualEntry {
