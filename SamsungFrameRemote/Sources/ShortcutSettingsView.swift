@@ -4,6 +4,7 @@ import SwiftUI
 struct ShortcutSettingsView: View {
     @State private var powerOnShortcut = GlobalHotKeyCoordinator.shared.shortcut(for: .powerOn)
     @State private var powerOffShortcut = GlobalHotKeyCoordinator.shared.shortcut(for: .powerOff)
+    @State private var launchAtLoginState = LaunchAtLoginManager.shared.currentState()
     @State private var recordingAction: PowerShortcutAction?
     @State private var localKeyMonitor: Any?
     @State private var suspendedHotKeys = false
@@ -36,6 +37,24 @@ struct ShortcutSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Divider()
+
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Launch at Login", isOn: Binding(
+                    get: { launchAtLoginState.isEnabled },
+                    set: { setLaunchAtLogin($0) }
+                ))
+                .toggleStyle(.switch)
+
+                Text(launchAtLoginState.statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+        }
+        .onAppear {
+            syncShortcuts()
+            refreshLaunchAtLoginState()
         }
         .onDisappear {
             stopRecording()
@@ -153,5 +172,22 @@ struct ShortcutSettingsView: View {
     private func syncShortcuts() {
         powerOnShortcut = GlobalHotKeyCoordinator.shared.shortcut(for: .powerOn)
         powerOffShortcut = GlobalHotKeyCoordinator.shared.shortcut(for: .powerOff)
+    }
+
+    private func refreshLaunchAtLoginState() {
+        launchAtLoginState = LaunchAtLoginManager.shared.currentState()
+    }
+
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        LaunchAtLoginManager.shared.markUserPreferenceInitialized()
+        do {
+            try LaunchAtLoginManager.shared.setEnabled(enabled)
+            refreshLaunchAtLoginState()
+            statusText = enabled ? "Launch at login enabled." : "Launch at login disabled."
+        } catch {
+            NSSound.beep()
+            refreshLaunchAtLoginState()
+            statusText = "Launch at login update failed: \(error.localizedDescription)"
+        }
     }
 }
