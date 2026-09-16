@@ -105,7 +105,13 @@ struct ArtModeConnectionTests {
         try await tests.testWakeWaitReportsProgress()
         try await tests.testStalledSendTimesOut()
         try await tests.testStalledReceiveTimesOut()
-        print("Passed 24 Art protocol, retry, wake, progress and timeout tests")
+        tests.testIdleFiresOncePerPeriod()
+        tests.testIdleActivityRearmsTimer()
+        tests.testIdleDefersWhileBusy()
+        tests.testIdleConfigurationStartsFreshInterval()
+        tests.testIdleIgnoresInvalidSamples()
+        tests.testIdleResetAfterWake()
+        print("Passed 30 Art, wake, network and idle timer tests")
     }
     func testEnterArtPreservesCurrentArtworkAndVerifiesState() async throws {
         let transport = FakeArtTransport()
@@ -382,6 +388,57 @@ struct ArtModeConnectionTests {
         let api = ArtModeConnection(transport: StalledArtTransport(stallSend: false), transportTimeout: 10_000_000)
         do { try await api.connect(); XCTFail("Expected receive timeout") }
         catch { XCTAssertEqual((error as NSError).code, URLError.timedOut.rawValue) }
+    }
+
+    func testIdleFiresOncePerPeriod() {
+        var period = IdlePeriod()
+        period.reset(at: 0)
+        XCTAssertEqual(period.sample(idleSeconds: 59, uptime: 59, threshold: 60, available: true), nil)
+        XCTAssertEqual(period.sample(idleSeconds: 60, uptime: 60, threshold: 60, available: true), .idle)
+        XCTAssertEqual(period.sample(idleSeconds: 120, uptime: 120, threshold: 60, available: true), nil)
+    }
+
+    func testIdleActivityRearmsTimer() {
+        var period = IdlePeriod()
+        period.reset(at: 0)
+        XCTAssertEqual(period.sample(idleSeconds: 60, uptime: 60, threshold: 60, available: true), .idle)
+        XCTAssertEqual(period.sample(idleSeconds: 0, uptime: 61, threshold: 60, available: true), .active)
+        XCTAssertEqual(period.sample(idleSeconds: 1, uptime: 62, threshold: 60, available: true), nil)
+        XCTAssertEqual(period.sample(idleSeconds: 60, uptime: 121, threshold: 60, available: true), .idle)
+    }
+
+    func testIdleDefersWhileBusy() {
+        var period = IdlePeriod()
+        period.reset(at: 0)
+        XCTAssertEqual(period.sample(idleSeconds: 60, uptime: 60, threshold: 60, available: false), nil)
+        XCTAssertEqual(period.sample(idleSeconds: 61, uptime: 61, threshold: 60, available: true), .idle)
+        // Activity still reports while a TV command is in flight.
+        XCTAssertEqual(period.sample(idleSeconds: 0, uptime: 62, threshold: 60, available: false), .active)
+    }
+
+    func testIdleConfigurationStartsFreshInterval() {
+        var period = IdlePeriod()
+        period.reset(at: 1000)
+        XCTAssertEqual(period.sample(idleSeconds: 300, uptime: 1001, threshold: 60, available: true), nil)
+        XCTAssertEqual(period.sample(idleSeconds: 359, uptime: 1060, threshold: 60, available: true), .idle)
+    }
+
+    func testIdleIgnoresInvalidSamples() {
+        var period = IdlePeriod()
+        period.reset(at: 0)
+        XCTAssertEqual(period.sample(idleSeconds: .infinity, uptime: 60, threshold: 60, available: true), nil)
+        XCTAssertEqual(period.sample(idleSeconds: .nan, uptime: 60, threshold: 60, available: true), nil)
+        XCTAssertEqual(period.sample(idleSeconds: -1, uptime: 60, threshold: 60, available: true), nil)
+        XCTAssertEqual(period.sample(idleSeconds: 60, uptime: 60, threshold: 60, available: true), .idle)
+    }
+
+    func testIdleResetAfterWake() {
+        var period = IdlePeriod()
+        period.reset(at: 0)
+        XCTAssertEqual(period.sample(idleSeconds: 60, uptime: 60, threshold: 60, available: true), .idle)
+        period.reset(at: 1000)
+        XCTAssertEqual(period.sample(idleSeconds: 1001, uptime: 1001, threshold: 60, available: true), nil)
+        XCTAssertEqual(period.sample(idleSeconds: 1060, uptime: 1060, threshold: 60, available: true), .idle)
     }
 
 }

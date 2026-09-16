@@ -46,7 +46,7 @@ struct ContentView: View {
             Button("Cancel", role: .cancel) {}
             Button("Reset", role: .destructive) { model.resetSavedData() }
         } message: {
-            Text("This removes the saved TV, MAC addresses and pairing tokens, and disables sleep/wake automation. Keyboard shortcuts stay saved.")
+            Text("This removes the saved TV, MAC addresses and pairing tokens, and disables idle and sleep/wake automation. Keyboard shortcuts stay saved.")
         }
     }
 
@@ -117,6 +117,25 @@ struct ContentView: View {
                     .font(.callout).foregroundStyle(.secondary)
                 Divider()
                 ShortcutSettingsView(mode: model.shortcutMode)
+            }
+            section("When your Mac is idle", subtitle: "Uses keyboard and mouse activity across your Mac while this app is running.") {
+                Toggle(model.shortcutMode == .art ? "Enter Art mode after inactivity" : "Turn TV off after inactivity", isOn: $model.idleEnabled)
+                    .toggleStyle(.checkbox)
+                HStack {
+                    Text("After")
+                    TextField("Minutes", value: $model.idleMinutes, format: .number.precision(.fractionLength(0)))
+                        .textFieldStyle(.roundedBorder).frame(width: 65)
+                    Stepper("minutes", value: $model.idleMinutes, in: 1...240)
+                    Spacer()
+                }.disabled(!model.idleEnabled)
+                Toggle("Return to viewing when activity resumes", isOn: $model.idleResumeViewing)
+                    .toggleStyle(.checkbox).disabled(!model.idleEnabled)
+                Text(model.shortcutMode == .art
+                     ? "Shows your current artwork once per idle period."
+                     : "Sends a long power press to fully turn off the TV, including from Art mode.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("1–240 minutes. The interval restarts when you change these settings or your Mac wakes. Mac sleep/wake actions below are independent.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             section("Mac sleep & wake", subtitle: "Independent of shortcut mode. Sleep sends a power press; wake checks the TV and wakes it if needed.") {
                 Picker("Sleep action", selection: Binding(get: { model.sleepWakeMode }, set: { model.setSleepWakeMode($0) })) {

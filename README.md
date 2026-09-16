@@ -116,3 +116,23 @@ failed packet sends and wake timeouts are reported in the activity log.
 
 Art WebSocket sends and receives each have a six-second transport timeout;
 cancellation closes the socket so a stalled operation releases the command UI.
+
+### Idle timer
+
+In **Shortcuts → When your Mac is idle**, enable the checkbox and choose 1–240
+minutes (default: 5). The setting follows the selected Power/Art mode:
+
+- **Art:** display the current artwork after inactivity.
+- **Power:** send a long power press to fully turn off the TV, including from Art.
+
+The app checks system-wide keyboard/mouse idle time once per second using
+[Apple's input inactivity API](https://developer.apple.com/documentation/coregraphics/cgeventsource/secondssincelasteventtype(_:eventtype:)).
+Each idle period triggers only once. Commands wait while another command or TV
+scan is running. Changing the mode, timer or selected TV starts a fresh interval;
+Mac wake also restarts it. The app must remain running and the Mac must be awake
+for the timer to fire. Watching video without keyboard/mouse input counts as idle.
+
+**Return to viewing when activity resumes** is enabled by default and can be
+unchecked. It wakes the TV if needed and exits Art mode after an idle action.
+Manual TV commands cancel a pending automatic return. Idle automation is off by
+default, persists across launches, and is independent of Mac sleep/wake automation.

@@ -4,6 +4,7 @@ cd "$(dirname "$0")/.."
 build_dir=$(mktemp -d /tmp/frame-art-tests.XXXXXX)
 trap 'rm -rf "$build_dir"' EXIT
 swiftc -module-cache-path "$build_dir/module-cache" \
+    SamsungFrameRemote/Sources/IdleCoordinator.swift \
     SamsungFrameRemote/Sources/ArtModeConnection.swift \
     SamsungFrameRemote/Sources/ArtWakePreparation.swift \
     SamsungFrameRemote/Sources/SamsungTVController.swift \

@@ -52,8 +52,30 @@ final class AppViewModel: ObservableObject {
     static weak var shared: AppViewModel?
     @Published var history: [CommandEntry] = []
     @Published var shortcutMode = ShortcutMode(rawValue: UserDefaults.standard.string(forKey: "shortcut_mode") ?? "power") ?? .power {
-        didSet { UserDefaults.standard.set(shortcutMode.rawValue, forKey: "shortcut_mode") }
+        didSet {
+            UserDefaults.standard.set(shortcutMode.rawValue, forKey: "shortcut_mode")
+            configureIdleTimer()
+        }
     }
+    @Published var idleEnabled = UserDefaults.standard.bool(forKey: "idle_enabled") {
+        didSet { UserDefaults.standard.set(idleEnabled, forKey: "idle_enabled"); configureIdleTimer() }
+    }
+    @Published var idleMinutes = max(1, min(240, (UserDefaults.standard.object(forKey: "idle_minutes") as? Int) ?? 5)) {
+        didSet {
+            idleMinutes = max(1, min(240, idleMinutes))
+            UserDefaults.standard.set(idleMinutes, forKey: "idle_minutes")
+            configureIdleTimer()
+        }
+    }
+    @Published var idleResumeViewing = (UserDefaults.standard.object(forKey: "idle_resume_viewing") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(idleResumeViewing, forKey: "idle_resume_viewing")
+            if !idleResumeViewing { idleRestore = nil; idleRestoreRequested = false }
+        }
+    }
+    private let idleCoordinator = IdleCoordinator()
+    private var idleRestore: String?
+    private var idleRestoreRequested = false
     @Published var discoveredTVs: [DetectedTV] = []
     @Published var selectedIP: String = ""
     @Published var manualIP: String = ""
@@ -93,6 +115,17 @@ final class AppViewModel: ObservableObject {
         }
 
         applySleepWakeState()
+        idleCoordinator.canRun = { [weak self] in
+            guard let self else { return false }
+            return !self.isRunningCommand && !self.isScanning && !self.selectedIP.isEmpty
+        }
+        idleCoordinator.onIdle = { [weak self] in self?.handleIdle() }
+        idleCoordinator.onActivity = { [weak self] in
+            guard let self, self.idleResumeViewing, self.idleRestore != nil else { return }
+            self.idleRestoreRequested = true
+        }
+        idleCoordinator.onTick = { [weak self] in self?.resumeAfterIdleIfNeeded() }
+        configureIdleTimer()
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -161,6 +194,7 @@ final class AppViewModel: ObservableObject {
         discoveredTVs = devicesIncludingSavedSelection(from: discoveredTVs)
 
         applySleepWakeState()
+        configureIdleTimer()
         setBanner("Selected TV: \(ip)", kind: .success)
     }
 
@@ -195,6 +229,7 @@ final class AppViewModel: ObservableObject {
     }
 
     func resetSavedData() {
+        idleEnabled = false
         sleepWakeMode = .off
         sleepWake.setActive(false)
         discoveredTVs = []
@@ -326,6 +361,8 @@ final class AppViewModel: ObservableObject {
 
     private func runIPCommand(
         _ label: String,
+        preserveIdleContext: Bool = false,
+        onCompletion: ((Bool) -> Void)? = nil,
         command: @escaping (String) async throws -> String
     ) {
         guard !isRunningCommand else {
@@ -337,6 +374,10 @@ final class AppViewModel: ObservableObject {
             return
         }
 
+        if !preserveIdleContext {
+            idleRestore = nil
+            idleRestoreRequested = false
+        }
         isRunningCommand = true
         commandToken += 1
         let token = commandToken
@@ -349,12 +390,14 @@ final class AppViewModel: ObservableObject {
                     guard self.commandToken == token else { return }
                     self.setBanner(result, kind: .success)
                     self.isRunningCommand = false
+                    onCompletion?(true)
                 }
             } catch {
                 await MainActor.run {
                     guard self.commandToken == token else { return }
                     self.setBanner("\(label) failed: \(error.localizedDescription)", kind: .error)
                     self.isRunningCommand = false
+                    onCompletion?(false)
                 }
             }
         }
@@ -381,6 +424,46 @@ final class AppViewModel: ObservableObject {
             }
             if action == .powerOn { return try await self.controller.on(ip: ip, mac: mac, wolPort: 9) }
             return try await self.controller.testerOff(ip: ip, press: .long)
+        }
+    }
+
+    private func configureIdleTimer() {
+        idleRestore = nil
+        idleRestoreRequested = false
+        idleCoordinator.configure(enabled: idleEnabled && !selectedIP.isEmpty, minutes: idleMinutes)
+    }
+
+    private func handleIdle() {
+        guard idleEnabled, !isRunningCommand, !isScanning, !selectedIP.isEmpty else { return }
+        let mode = shortcutMode
+        if idleResumeViewing { idleRestore = selectedIP }
+        let label = mode == .art ? "Idle: enter Art mode" : "Idle: power off"
+        runIPCommand(label, preserveIdleContext: true, onCompletion: { [weak self] success in
+            if !success { self?.idleRestore = nil; self?.idleRestoreRequested = false }
+        }) { ip in
+            let result: String
+            if mode == .art {
+                result = try await self.controller.artModeOn(ip: ip, mac: self.manualMac, progress: self.commandProgress)
+            } else {
+                result = try await self.controller.testerOff(ip: ip, press: .long)
+            }
+            // Do not resume a TV that this idle action did not change.
+            if result.contains("already on") || result.contains("No action taken") {
+                self.idleRestore = nil
+                self.idleRestoreRequested = false
+            }
+            return result
+        }
+    }
+
+    private func resumeAfterIdleIfNeeded() {
+        guard idleRestoreRequested, idleResumeViewing, idleEnabled,
+              !isRunningCommand, !isScanning, let restore = idleRestore,
+              restore == selectedIP else { return }
+        idleRestore = nil
+        idleRestoreRequested = false
+        runIPCommand("Activity resumed: return to viewing") { ip in
+            try await self.controller.artModeOff(ip: ip, mac: self.manualMac, progress: self.commandProgress)
         }
     }
 
