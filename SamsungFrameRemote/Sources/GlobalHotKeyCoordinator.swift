@@ -123,10 +123,6 @@ enum GlobalHotKeyError: LocalizedError {
 final class GlobalHotKeyCoordinator {
     static let shared = GlobalHotKeyCoordinator()
 
-    private let controller = SamsungTVController()
-    private let macCache = MACCacheStore()
-    private let selectedIPKey = "selected_tv_ip"
-    private let manualMacKey = "manual_tv_mac"
     private let signature = fourCharCode("SFRM")
 
     private var registeredRefs: [UInt32: EventHotKeyRef] = [:]
@@ -309,71 +305,12 @@ final class GlobalHotKeyCoordinator {
     private func trigger(_ actions: [PowerShortcutAction]) {
         guard !actions.isEmpty else { return }
 
-        let unique = Set(actions)
-        if unique.contains(.powerOn) && unique.contains(.powerOff) {
-            triggerToggle()
-            return
-        }
-
-        guard let action = actions.first else { return }
-
-        Task {
-            guard let ip = currentIP() else {
-                return
-            }
-
-            do {
-                switch action {
-                case .powerOn:
-                    let mac = currentMAC(for: ip)
-                    _ = try await controller.on(ip: ip, mac: mac, wolPort: 9)
-                case .powerOff:
-                    _ = try await controller.testerOff(ip: ip, press: .long)
-                }
-            } catch {
-                // No UI context here; silently ignore failures.
-            }
+        Task { @MainActor in
+            AppViewModel.shared?.triggerShortcut(actions)
         }
     }
 
-    private func triggerToggle() {
-        Task {
-            guard let ip = currentIP() else {
-                return
-            }
 
-            do {
-                let offResult = try await controller.testerOff(ip: ip, press: .long)
-                if offResult.localizedCaseInsensitiveContains("sent ") {
-                    return
-                }
-
-                let mac = currentMAC(for: ip)
-                _ = try await controller.testerOn(ip: ip, mac: mac, wolPort: 9)
-            } catch {
-                // No UI context here; silently ignore failures.
-            }
-        }
-    }
-
-    private func currentIP() -> String? {
-        let value = (UserDefaults.standard.string(forKey: selectedIPKey) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return value.isEmpty ? nil : value
-    }
-
-    private func currentMAC(for ip: String) -> String? {
-        if let cached = macCache.get(for: ip) {
-            let value = cached.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty {
-                return value
-            }
-        }
-
-        let manual = (UserDefaults.standard.string(forKey: manualMacKey) ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return manual.isEmpty ? nil : manual
-    }
 }
 
 private func fourCharCode(_ string: String) -> OSType {

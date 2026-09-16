@@ -32,13 +32,28 @@ enum BannerKind {
     case error
 }
 
-enum CommandTimeoutError: LocalizedError {
-    case timedOut
-    var errorDescription: String? { "Timed out after 3s" }
+enum ShortcutMode: String, CaseIterable {
+    case power, art
+    var label: String { self == .power ? "Power mode" : "Art mode" }
+    func label(for action: PowerShortcutAction) -> String {
+        if self == .power { return action.label }
+        return action == .powerOn ? "Enter Art" : "Exit Art"
+    }
+}
+
+struct CommandEntry: Identifiable {
+    let id = UUID()
+    let date = Date()
+    let text: String
 }
 
 @MainActor
 final class AppViewModel: ObservableObject {
+    static weak var shared: AppViewModel?
+    @Published var history: [CommandEntry] = []
+    @Published var shortcutMode = ShortcutMode(rawValue: UserDefaults.standard.string(forKey: "shortcut_mode") ?? "power") ?? .power {
+        didSet { UserDefaults.standard.set(shortcutMode.rawValue, forKey: "shortcut_mode") }
+    }
     @Published var discoveredTVs: [DetectedTV] = []
     @Published var selectedIP: String = ""
     @Published var manualIP: String = ""
@@ -46,8 +61,6 @@ final class AppViewModel: ObservableObject {
     @Published var sleepWakeMode: SleepWakePowerMode = .off
     @Published var isScanning = false
     @Published var isRunningCommand = false
-    @Published var showManualEntry = false
-    @Published var showDebugTools = false
     @Published var bannerText = "Ready"
     @Published var bannerKind: BannerKind = .info
     @Published var commandToken: Int = 0
@@ -62,6 +75,7 @@ final class AppViewModel: ObservableObject {
     private let sleepWakeModeKey = "sleep_wake_mode"
 
     init() {
+        Self.shared = self
         selectedIP = UserDefaults.standard.string(forKey: selectedIPKey) ?? ""
         manualIP = selectedIP
         manualMac = macCache.get(for: selectedIP) ?? UserDefaults.standard.string(forKey: manualMacKey) ?? ""
@@ -256,13 +270,13 @@ final class AppViewModel: ObservableObject {
 
     func triggerArtModeOn() {
         runIPCommand("art-mode-on") { ip in
-            try await self.controller.artModeOn(ip: ip)
+            try await self.controller.artModeOn(ip: ip, mac: self.manualMac)
         }
     }
 
     func triggerArtModeOff() {
         runIPCommand("art-mode-off") { ip in
-            try await self.controller.artModeOff(ip: ip)
+            try await self.controller.artModeOff(ip: ip, mac: self.manualMac)
         }
     }
 
@@ -320,9 +334,7 @@ final class AppViewModel: ObservableObject {
 
         Task {
             do {
-                let result = try await runWithTimeout(seconds: 3) {
-                    try await command(ip)
-                }
+                let result = try await command(ip)
                 await MainActor.run {
                     guard self.commandToken == token else { return }
                     self.setBanner(result, kind: .success)
@@ -337,13 +349,28 @@ final class AppViewModel: ObservableObject {
             }
         }
 
-        Task {
-            try? await Task.sleep(nanoseconds: 3_000_000_000)
-            await MainActor.run {
-                guard self.commandToken == token, self.isRunningCommand else { return }
-                self.setBanner("\(label) failed: Timed out after 3s", kind: .error)
-                self.isRunningCommand = false
+    }
+
+    func triggerArtStatus() {
+        runIPCommand("Art status") { ip in try await self.controller.artStatus(ip: ip) }
+    }
+
+    func triggerShortcut(_ actions: [PowerShortcutAction]) {
+        let mode = shortcutMode
+        let toggle = Set(actions).count == 2
+        guard let action = actions.first else { return }
+        runIPCommand(toggle ? "Toggle \(mode.label)" : mode.label(for: action)) { ip in
+            if mode == .art {
+                return try await self.controller.changeArtMode(ip: ip, target: toggle ? nil : (action == .powerOn ? .on : .off), mac: self.manualMac)
             }
+            let mac = self.manualMac.trimmingCharacters(in: .whitespacesAndNewlines)
+            if toggle {
+                let result = try await self.controller.testerOff(ip: ip, press: .long)
+                if result.localizedCaseInsensitiveContains("sent ") { return result }
+                return try await self.controller.testerOn(ip: ip, mac: mac, wolPort: 9)
+            }
+            if action == .powerOn { return try await self.controller.on(ip: ip, mac: mac, wolPort: 9) }
+            return try await self.controller.testerOff(ip: ip, press: .long)
         }
     }
 
@@ -426,227 +453,10 @@ final class AppViewModel: ObservableObject {
     }
 
     private func setBanner(_ text: String, kind: BannerKind) {
+        history.insert(CommandEntry(text: text), at: 0)
+        history = Array(history.prefix(100))
         bannerText = text
         bannerKind = kind
     }
 
-    private func runWithTimeout<T>(
-        seconds: Double,
-        operation: @escaping () async throws -> T
-    ) async throws -> T {
-        try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask {
-                try await operation()
-            }
-            group.addTask {
-                let nanos = UInt64((seconds * 1_000_000_000).rounded())
-                try await Task.sleep(nanoseconds: nanos)
-                throw CommandTimeoutError.timedOut
-            }
-
-            let first = try await group.next()!
-            group.cancelAll()
-            return first
-        }
-    }
-}
-
-struct ContentView: View {
-    @ObservedObject var model: AppViewModel
-
-    private var bannerColor: Color {
-        switch model.bannerKind {
-        case .info: return Color.blue.opacity(0.16)
-        case .success: return Color.green.opacity(0.18)
-        case .warning: return Color.orange.opacity(0.18)
-        case .error: return Color.red.opacity(0.18)
-        }
-    }
-
-    private var disabled: Bool {
-        model.isRunningCommand || model.isScanning
-    }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 10) {
-                    Button("Search for Samsung Frame TVs") {
-                        model.scanForTVs()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.isScanning)
-
-                    Button(model.showManualEntry ? "Hide Manual Entry" : "Enter Manually") {
-                        model.showManualEntry.toggle()
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(model.isRunningCommand)
-
-                    Spacer()
-
-                    Menu("Debug") {
-                        Toggle("Show Debug Tools", isOn: $model.showDebugTools)
-                        Divider()
-                        Button("Reset Saved Data", role: .destructive) {
-                            model.resetSavedData()
-                        }
-                    }
-                    .disabled(model.isRunningCommand)
-                }
-
-                HStack(spacing: 10) {
-                    if model.isScanning {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                    Text(model.bannerText)
-                        .font(.caption)
-                        .lineLimit(2)
-                    Spacer()
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
-                .background(bannerColor)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-
-                HStack {
-                    Text(model.selectionSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                }
-
-                GroupBox("Discovery") {
-                    if model.discoveredTVs.isEmpty {
-                        Text(model.isScanning ? "Searching..." : "No TVs discovered yet")
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 4)
-                    } else {
-                        List(model.discoveredTVs, selection: Binding(
-                            get: { model.selectedIP.isEmpty ? nil : model.selectedIP },
-                            set: { newValue in
-                                if let ip = newValue {
-                                    model.selectIP(ip)
-                                }
-                            }
-                        )) { tv in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(tv.ipAddress)
-                                    .font(.body.monospaced())
-                                Text("MAC: \(tv.macAddress ?? "unknown")")
-                                    .font(.caption2.monospaced())
-                                    .foregroundStyle(.secondary)
-                                Text(tv.name)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                            .tag(tv.ipAddress)
-                        }
-                        .frame(minHeight: 140)
-                    }
-                }
-
-                GroupBox("Sleep/Wake Automation") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Power button behavior to turn off: Short press / Medium press / Long press")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-
-                        HStack(spacing: 8) {
-                            Text("Power button behavior to turn off:")
-                                .font(.subheadline)
-                            Picker("Power button behavior to turn off", selection: Binding(
-                                get: { model.sleepWakeMode },
-                                set: { model.setSleepWakeMode($0) }
-                            )) {
-                                ForEach(SleepWakePowerMode.allCases, id: \.rawValue) { mode in
-                                    Text(mode.label).tag(mode)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .labelsHidden()
-                            .frame(minWidth: 320, maxWidth: 320)
-                            Spacer()
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 2)
-                }
-
-                GroupBox("Global Shortcut Automation") {
-                    ShortcutSettingsView()
-                        .padding(.top, 2)
-                }
-
-                if model.showManualEntry {
-                    GroupBox("Manual Entry") {
-                        VStack(spacing: 8) {
-                            HStack(spacing: 8) {
-                                TextField("Manual TV IP", text: $model.manualIP)
-                                    .textFieldStyle(.roundedBorder)
-
-                                Button("Use IP") {
-                                    model.useManualIP()
-                                }
-                                .disabled(disabled)
-                            }
-
-                            HStack(spacing: 8) {
-                                TextField("TV MAC for Wake-on-LAN (AA:BB:CC:DD:EE:FF)", text: $model.manualMac)
-                                    .textFieldStyle(.roundedBorder)
-
-                                Button("Save MAC") {
-                                    model.saveManualMac()
-                                }
-                                .disabled(disabled)
-                            }
-                        }
-                        .padding(.top, 2)
-                    }
-                }
-
-                if model.showDebugTools {
-                    GroupBox("Debug Tools") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Advanced controls for validation and troubleshooting.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-
-                            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
-                                Button("State") { model.triggerState() }
-                                Button("Pair") { model.triggerPair() }
-                                Button("To HDMI") { model.triggerToHDMI() }
-                                Button("Art Mode On") { model.triggerArtModeOn() }
-                                Button("Art Mode Off") { model.triggerArtModeOff() }
-                                Button("Power") { model.triggerPower() }
-                                Button("Power Medium") { model.triggerPowerMedium() }
-                                Button("Power Long") { model.triggerPowerLong() }
-                                Button("On (WOL/state)") { model.triggerOn() }
-                                Button("Wake (WOL only)") { model.triggerWakeWOLOnly() }
-                                Button("Off (power --long)") { model.triggerPowerLong() }
-                                Button("KEY_POWEROFF") { model.triggerKeyPowerOff() }
-                            }
-                            .disabled(disabled)
-
-                            Divider()
-
-                            HStack(spacing: 8) {
-                                Text("Testers")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Button("On") { model.triggerTesterOn() }
-                                Button("Off") { model.triggerTesterOff() }
-                            }
-                            .disabled(disabled)
-                        }
-                        .padding(.top, 2)
-                    }
-                }
-            }
-            .padding(16)
-        }
-        .frame(minWidth: 780, minHeight: 620)
-    }
 }

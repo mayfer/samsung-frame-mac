@@ -2,13 +2,14 @@ import AppKit
 import SwiftUI
 
 struct ShortcutSettingsView: View {
+    let mode: ShortcutMode
     @State private var powerOnShortcut = GlobalHotKeyCoordinator.shared.shortcut(for: .powerOn)
     @State private var powerOffShortcut = GlobalHotKeyCoordinator.shared.shortcut(for: .powerOff)
     @State private var launchAtLoginState = LaunchAtLoginManager.shared.currentState()
     @State private var recordingAction: PowerShortcutAction?
     @State private var localKeyMonitor: Any?
     @State private var suspendedHotKeys = false
-    @State private var statusText = "Configure global key combos to trigger power actions while the app is running. On and Off may use the same combo."
+    @State private var statusText = "Shortcuts work while the app is running. Use the same combo for both actions to toggle."
 
     private var defaultsSummary: String {
         let on = GlobalHotKeyCoordinator.defaultShortcut(for: .powerOn).displayString
@@ -64,8 +65,8 @@ struct ShortcutSettingsView: View {
     @ViewBuilder
     private func shortcutRow(for action: PowerShortcutAction) -> some View {
         HStack(spacing: 10) {
-            Text(action.label)
-                .frame(width: 90, alignment: .leading)
+            Text(mode.label(for: action))
+                .frame(width: 100, alignment: .leading)
 
             Text(shortcutText(for: action))
                 .font(.body.monospaced())
@@ -100,7 +101,7 @@ struct ShortcutSettingsView: View {
         GlobalHotKeyCoordinator.shared.suspendRegistrationsForRecording()
         suspendedHotKeys = true
         recordingAction = action
-        statusText = "Press a key combo for \(action.label). Include at least one modifier key."
+        statusText = "Press a key combo for \(mode.label(for: action)). Include at least one modifier key."
 
         localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard recordingAction == action else {
@@ -123,7 +124,7 @@ struct ShortcutSettingsView: View {
             do {
                 try GlobalHotKeyCoordinator.shared.setShortcut(shortcut, for: action)
                 syncShortcuts()
-                statusText = "Saved \(action.label): \(shortcut.displayString)"
+                statusText = "Saved \(mode.label(for: action)): \(shortcut.displayString)"
             } catch {
                 NSSound.beep()
                 statusText = error.localizedDescription
@@ -138,7 +139,7 @@ struct ShortcutSettingsView: View {
         do {
             try GlobalHotKeyCoordinator.shared.setShortcut(nil, for: action)
             syncShortcuts()
-            statusText = "Cleared \(action.label) shortcut."
+            statusText = "Cleared \(mode.label(for: action)) shortcut."
         } catch {
             NSSound.beep()
             statusText = error.localizedDescription

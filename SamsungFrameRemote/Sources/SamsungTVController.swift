@@ -64,14 +64,12 @@ actor SamsungTVController {
         return "Sent Art-to-HDMI sequence (KEY_SOURCE, KEY_RIGHT, KEY_ENTER)."
     }
 
-    func artModeOn(ip: String) async throws -> String {
-        try await setArtMode(ip: ip, value: "on")
-        return "Sent art mode on request."
+    func artModeOn(ip: String, mac: String? = nil) async throws -> String {
+        try await changeArtMode(ip: ip, target: .on, mac: mac)
     }
 
-    func artModeOff(ip: String) async throws -> String {
-        try await setArtMode(ip: ip, value: "off")
-        return "Sent art mode off request."
+    func artModeOff(ip: String, mac: String? = nil) async throws -> String {
+        try await changeArtMode(ip: ip, target: .off, mac: mac)
     }
 
     func powerOffKey(ip: String) async throws -> String {
@@ -209,7 +207,17 @@ actor SamsungTVController {
         let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
         let ws = session.webSocketTask(with: url)
         ws.resume()
+        let timeout = Task {
+            try await Task.sleep(nanoseconds: 12_000_000_000)
+            ws.cancel(with: .goingAway, reason: nil)
+        }
+        defer {
+            timeout.cancel()
+            ws.cancel(with: .normalClosure, reason: nil)
+            session.invalidateAndCancel()
+        }
 
+        var connected = false
         let deadline = Date().addingTimeInterval(8)
         while Date() < deadline {
             do {
@@ -228,11 +236,15 @@ actor SamsungTVController {
                     setSavedToken(ip: ip, token: token)
                 }
                 if isConnectEvent(text) {
+                    connected = true
                     break
                 }
             } catch {
-                break
+                throw error
             }
+        }
+        guard connected else {
+            throw SamsungTVControllerError.message("TV remote channel did not connect. Pair with the TV and approve the connection if prompted.")
         }
 
         for key in keys {
@@ -264,7 +276,17 @@ actor SamsungTVController {
         let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
         let ws = session.webSocketTask(with: url)
         ws.resume()
+        let timeout = Task {
+            try await Task.sleep(nanoseconds: 12_000_000_000)
+            ws.cancel(with: .goingAway, reason: nil)
+        }
+        defer {
+            timeout.cancel()
+            ws.cancel(with: .normalClosure, reason: nil)
+            session.invalidateAndCancel()
+        }
 
+        var connected = false
         let deadline = Date().addingTimeInterval(8)
         while Date() < deadline {
             do {
@@ -283,11 +305,15 @@ actor SamsungTVController {
                     setSavedToken(ip: ip, token: token)
                 }
                 if isConnectEvent(text) {
+                    connected = true
                     break
                 }
             } catch {
-                break
+                throw error
             }
+        }
+        guard connected else {
+            throw SamsungTVControllerError.message("TV remote channel did not connect. Pair with the TV and approve the connection if prompted.")
         }
 
         let pressPayload = try remotePayload(key: "KEY_POWER", cmd: "Press")
@@ -322,99 +348,38 @@ actor SamsungTVController {
         }
     }
 
-    private func queryArtModeState(ip: String) async -> ArtModeState {
-        guard let appData = appName.data(using: .utf8) else {
-            return .unknown
+    func artStatus(ip: String) async throws -> String {
+        try await NetworkRetry.once {
+            let connection = try ArtModeConnection(ip: ip)
+            defer { connection.close() }
+            try await connection.connect()
+            return "Art mode: \(try await connection.status().rawValue)"
         }
-        let nameB64 = appData.base64EncodedString()
-
-        guard let url = URL(string: "wss://\(ip):8002/api/v2/channels/com.samsung.art-app?name=\(nameB64)") else {
-            return .unknown
-        }
-
-        let delegate = InsecureWebSocketDelegate()
-        let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
-        let ws = session.webSocketTask(with: url)
-        ws.resume()
-        defer {
-            ws.cancel(with: .normalClosure, reason: nil)
-            session.invalidateAndCancel()
-        }
-
-        let requestPayload: [String: Any] = [
-            "method": "ms.channel.emit",
-            "params": [
-                "event": "art_app_request",
-                "to": "host",
-                "data": #"{"request":"get_artmode_status","id":"swift-tv-controller"}"#
-            ]
-        ]
-
-        if let data = try? JSONSerialization.data(withJSONObject: requestPayload),
-           let text = String(data: data, encoding: .utf8) {
-            do {
-                try await ws.send(.string(text))
-            } catch {
-                return .unavailable
-            }
-        }
-
-        let deadline = Date().addingTimeInterval(3)
-        while Date() < deadline {
-            do {
-                let message = try await ws.receive()
-                let text: String
-                switch message {
-                case .string(let value):
-                    text = value
-                case .data(let value):
-                    text = String(decoding: value, as: UTF8.self)
-                @unknown default:
-                    text = ""
-                }
-
-                if let state = extractArtModeState(from: text) {
-                    return state
-                }
-            } catch {
-                return .unavailable
-            }
-        }
-
-        return .unknown
     }
 
-    private func setArtMode(ip: String, value: String) async throws {
-        guard let appData = appName.data(using: .utf8) else {
-            throw SamsungTVControllerError.message("Invalid app name")
-        }
-        let nameB64 = appData.base64EncodedString()
+    func changeArtMode(ip: String, target: ArtModeState? = nil, mac: String? = nil) async throws -> String {
+        let prepared = try await ArtWakePreparation.prepare(target: target, mac: mac, probe: {
+            guard let info = await self.fetchTVDeviceInfo(ip: ip) else { return .unreachable }
+            let power = self.extractPowerState(from: info)
+            return ["standby", "off"].contains(power ?? "") ? .standby : .awake
+        }, wake: { address in
+            try self.sendWOL(mac: address, ip: ip, port: 9)
+        })
+        let result = try await ArtModeConnection.changeWithRetry(target: prepared.target, connect: {
+            try ArtModeConnection(ip: ip)
+        }, exitArt: {
+            try await self.sendRemoteKeys(ip: ip, keys: ["KEY_POWER"])
+        })
+        return prepared.sentWake ? "Wake-on-LAN sent; TV responded. \(result)" : result
+    }
 
-        guard let url = URL(string: "wss://\(ip):8002/api/v2/channels/com.samsung.art-app?name=\(nameB64)") else {
-            throw SamsungTVControllerError.message("Invalid art mode URL")
-        }
-
-        let delegate = InsecureWebSocketDelegate()
-        let session = URLSession(configuration: .ephemeral, delegate: delegate, delegateQueue: nil)
-        let ws = session.webSocketTask(with: url)
-        ws.resume()
-        defer {
-            ws.cancel(with: .normalClosure, reason: nil)
-            session.invalidateAndCancel()
-        }
-
-        let requestPayload: [String: Any] = [
-            "method": "ms.channel.emit",
-            "params": [
-                "event": "art_app_request",
-                "to": "host",
-                "data": #"{"request":"set_artmode_status","value":"\#(value)","id":"swift-tv-controller"}"#
-            ]
-        ]
-
-        let data = try JSONSerialization.data(withJSONObject: requestPayload)
-        let text = String(decoding: data, as: UTF8.self)
-        try await ws.send(.string(text))
+    private func queryArtModeState(ip: String) async -> ArtModeState {
+        do {
+            let connection = try ArtModeConnection(ip: ip)
+            defer { connection.close() }
+            try await connection.connect()
+            return try await connection.status()
+        } catch { return .unavailable }
     }
 
     private func getTVState(ip: String) async -> TVState {
@@ -432,37 +397,6 @@ actor SamsungTVController {
             return nil
         }
         return value.lowercased()
-    }
-
-    private func extractArtModeState(from text: String) -> ArtModeState? {
-        guard let data = text.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-
-        if let event = object["event"] as? String,
-           event == "d2d_service_message",
-           let inner = object["data"] as? String,
-           let innerData = inner.data(using: .utf8),
-           let nested = try? JSONSerialization.jsonObject(with: innerData) as? [String: Any] {
-            if let status = nested["status"] as? String {
-                if status.lowercased() == "on" { return .on }
-                if status.lowercased() == "off" { return .off }
-            }
-            if let value = nested["value"] as? String {
-                if value.lowercased() == "on" { return .on }
-                if value.lowercased() == "off" { return .off }
-            }
-        }
-
-        if text.contains("\"status\":\"on\"") || text.contains("\"value\":\"on\"") {
-            return .on
-        }
-        if text.contains("\"status\":\"off\"") || text.contains("\"value\":\"off\"") {
-            return .off
-        }
-
-        return nil
     }
 
     private func parseMAC(_ raw: String) throws -> [UInt8] {
@@ -500,6 +434,7 @@ actor SamsungTVController {
         for _ in 0..<16 { packet.append(contentsOf: macBytes) }
 
         let targets = ["255.255.255.255", inferSubnetBroadcast(ip: ip)]
+        var sentPacket = false
 
         for target in targets {
             let sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
@@ -520,13 +455,18 @@ actor SamsungTVController {
                 packet.withUnsafeBytes { p in
                     withUnsafePointer(to: &addr) { a in
                         a.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                            _ = sendto(sock, p.baseAddress, packet.count, 0, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                            if sendto(sock, p.baseAddress, packet.count, 0, sa, socklen_t(MemoryLayout<sockaddr_in>.size)) == packet.count {
+                                sentPacket = true
+                            }
                         }
                     }
                 }
             }
 
             close(sock)
+        }
+        guard sentPacket else {
+            throw SamsungTVControllerError.message("Could not send Wake-on-LAN. Check your Mac's network connection.")
         }
     }
 

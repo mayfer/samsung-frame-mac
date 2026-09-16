@@ -51,3 +51,62 @@ Notes:
 - Launch the app at least once and select/save a TV in the UI first.
 - `On` uses state-aware on logic (`WOL` when needed).
 - `Off` uses the app's off path (long power press behavior).
+
+## App organization
+
+- **TV:** discover/select a TV, pair, or save its IP and Wake-on-LAN MAC address.
+- **Shortcuts:** choose **Power mode** or **Art mode**, record global shortcuts, and configure launch at login and independent Mac sleep/wake automation.
+- **Test & Debug:** run the actual shortcut actions, read reachability/Art state, expand advanced remote commands, and copy the session activity log.
+
+The mode selection persists and keeps existing key combinations. In Power mode,
+shortcuts retain the existing Power On/Off behavior. In Art mode, the same slots
+become Enter Art/Exit Art. Assign the same combination to both slots for a toggle;
+Art toggling reads the TV's reported state first. Failed state reads do not send a
+toggle. Shortcut failures appear in the activity log.
+
+Art control follows `../screensaver-tv/SamsungFrameAPI`: connect to the local
+Art WebSocket on port 8001, wait for channel readiness, and correlate requests
+with fresh UUIDs. Enter Art reads and reselects the current artwork with
+`show: true`. Exit Art first confirms Art is on, then sends one short `KEY_POWER`
+click to use the TV's normal resume path. It does not send the Art API off setter
+or `KEY_EXIT`: both left the user in the Art Store. Already-off requests send no
+power command, and failed state reads never cause a blind toggle. Both Art
+transitions are verified by reading Art state; this cannot verify which input is
+visible. Remote pairing must be approved for exit.
+Sleep/wake automation and AppleScript commands remain independent power controls.
+
+### Protocol checks
+
+```sh
+sh scripts/test_art_protocol.sh
+```
+
+These use a simulated Art transport to check message format, response matching,
+artwork preservation, entry without a setter acknowledgement, state-guarded remote exit,
+already-selected state, and error handling. They do not verify a physical TV's
+WebSocket handshake or display output.
+
+Art commands and Art status reads automatically retry once after a transient
+network failure, with a 750 ms delay and a fresh connection. Art toggles retain
+the original target across that retry and re-read the TV state before sending
+another command, so a lost response does not toggle the TV back. TV rejections,
+invalid responses, and task cancellation are not retried. Raw remote button
+commands are not automatically replayed.
+
+### Waking an offline TV from Art shortcuts
+
+Art commands check the TV first, retrying an unanswered reachability probe once.
+If the TV reports standby or remains unreachable, the app sends Wake-on-LAN to
+its saved MAC address and waits up to about 30 seconds for it to become ready.
+An unreachable TV is not assumed to be definitely powered off; network outages
+produce a clear wake timeout rather than a blind power-button press.
+
+- **Exit Art:** wake if needed, read Art state, and send a short power click only
+  if Art is on. If the TV wakes directly into viewing, no power click is sent.
+- **Shared Art toggle:** when offline/standby, wake into viewing mode. When already
+  awake, toggle normally. The target stays fixed across a network retry.
+- **Enter Art:** wake if needed, then display the existing artwork.
+
+Save the TV's MAC under **TV → Connection details**. The TV must remain plugged
+in and connected to a network that supports waking it. Missing MAC addresses,
+failed packet sends and wake timeouts are reported in the activity log.

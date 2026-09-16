@@ -10,6 +10,6 @@ struct SamsungFrameRemoteApp: App {
         WindowGroup {
             ContentView(model: model)
         }
-        .defaultSize(width: 560, height: 420)
+        .defaultSize(width: 720, height: 650)
     }
 }
