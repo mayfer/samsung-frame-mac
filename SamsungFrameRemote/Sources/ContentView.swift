@@ -270,13 +270,13 @@ final class AppViewModel: ObservableObject {
 
     func triggerArtModeOn() {
         runIPCommand("art-mode-on") { ip in
-            try await self.controller.artModeOn(ip: ip, mac: self.manualMac)
+            try await self.controller.artModeOn(ip: ip, mac: self.manualMac, progress: self.commandProgress)
         }
     }
 
     func triggerArtModeOff() {
         runIPCommand("art-mode-off") { ip in
-            try await self.controller.artModeOff(ip: ip, mac: self.manualMac)
+            try await self.controller.artModeOff(ip: ip, mac: self.manualMac, progress: self.commandProgress)
         }
     }
 
@@ -312,6 +312,16 @@ final class AppViewModel: ObservableObject {
             return nil
         }
         return ip
+    }
+
+    private var commandProgress: TVCommandProgress {
+        let token = commandToken
+        return { [weak self] text in
+            await MainActor.run {
+                guard let self, self.isRunningCommand, self.commandToken == token else { return }
+                self.setBanner(text, kind: .info)
+            }
+        }
     }
 
     private func runIPCommand(
@@ -361,7 +371,7 @@ final class AppViewModel: ObservableObject {
         guard let action = actions.first else { return }
         runIPCommand(toggle ? "Toggle \(mode.label)" : mode.label(for: action)) { ip in
             if mode == .art {
-                return try await self.controller.changeArtMode(ip: ip, target: toggle ? nil : (action == .powerOn ? .on : .off), mac: self.manualMac)
+                return try await self.controller.changeArtMode(ip: ip, target: toggle ? nil : (action == .powerOn ? .on : .off), mac: self.manualMac, progress: self.commandProgress)
             }
             let mac = self.manualMac.trimmingCharacters(in: .whitespacesAndNewlines)
             if toggle {

@@ -26,27 +26,44 @@ final class WebSocketArtTransport: ArtTransport {
 /// The local Art API sequence verified in screensaver-tv/SamsungFrameAPI.
 final class ArtModeConnection {
     private let transport: ArtTransport
+    private let transportTimeout: UInt64
 
     init(ip: String) throws {
         let name = Data("frame-mac-local".utf8).base64EncodedString()
         guard let url = URL(string: "ws://\(ip):8001/api/v2/channels/com.samsung.art-app?name=\(name)") else {
             throw SamsungTVControllerError.message("Invalid TV address")
         }
+        transportTimeout = 6_000_000_000
         transport = WebSocketArtTransport(url: url)
     }
 
-    init(transport: ArtTransport) { self.transport = transport }
+    init(transport: ArtTransport, transportTimeout: UInt64 = 6_000_000_000) {
+        self.transport = transport
+        self.transportTimeout = transportTimeout
+    }
 
     func close() { transport.close() }
 
-    private func receive() async throws -> [String: Any] {
-        // Cancel the socket itself so a silent TV cannot leave receive suspended.
+    private func withTransportTimeout<T>(_ operation: () async throws -> T) async throws -> T {
+        let deadline = Date().addingTimeInterval(Double(transportTimeout) / 1_000_000_000)
         let timeout = Task {
-            try await Task.sleep(nanoseconds: 6_000_000_000)
+            try await Task.sleep(nanoseconds: transportTimeout)
             transport.close()
         }
         defer { timeout.cancel() }
-        let message = try await transport.receive()
+        return try await withTaskCancellationHandler(operation: {
+            try Task.checkCancellation()
+            do { return try await operation() }
+            catch {
+                try Task.checkCancellation()
+                if Date() >= deadline { throw URLError(.timedOut) }
+                throw error
+            }
+        }, onCancel: { self.transport.close() })
+    }
+
+    private func receive() async throws -> [String: Any] {
+        let message = try await withTransportTimeout { try await transport.receive() }
         let data: Data
         switch message {
         case .string(let text): data = Data(text.utf8)
@@ -88,7 +105,7 @@ final class ArtModeConnection {
             "event": "art_app_request", "to": "host", "data": String(decoding: encoded, as: UTF8.self)
         ]]
         let data = try JSONSerialization.data(withJSONObject: envelope)
-        try await transport.send(.string(String(decoding: data, as: UTF8.self)))
+        try await withTransportTimeout { try await transport.send(.string(String(decoding: data, as: UTF8.self))) }
         return id
     }
 
@@ -115,10 +132,11 @@ final class ArtModeConnection {
         return state
     }
 
-    func setMode(_ target: ArtModeState, exitArt: (() async throws -> Void)? = nil) async throws -> String {
+    func setMode(_ target: ArtModeState, progress: TVCommandProgress = { _ in }, exitArt: (() async throws -> Void)? = nil) async throws -> String {
         let before = try await status()
         guard before != target else { return "Art mode is already \(target.rawValue)." }
         if target == .on {
+            await progress("Entering Art mode…")
             let artwork = try await call("get_current_artwork")
             guard let contentID = artwork["content_id"] as? String, !contentID.isEmpty else {
                 throw SamsungTVControllerError.message("TV did not return an existing artwork")
@@ -130,8 +148,10 @@ final class ArtModeConnection {
             }
             // A short power click while Art is ON uses the TV's normal resume path.
             // The Art API off setter opens the Art Store on the user's TV.
+            await progress("Exiting Art mode…")
             try await exitArt()
         }
+        await progress("Confirming Art mode \(target.rawValue)…")
         let deadline = Date().addingTimeInterval(12)
         while Date() < deadline {
             try await Task.sleep(nanoseconds: 500_000_000)
@@ -159,11 +179,12 @@ enum NetworkRetry {
         return false
     }
 
-    static func once<T>(delay: UInt64 = 750_000_000, operation: () async throws -> T) async throws -> T {
+    static func once<T>(delay: UInt64 = 750_000_000, onRetry: () async -> Void = {}, operation: () async throws -> T) async throws -> T {
         do { return try await operation() }
         catch {
             try Task.checkCancellation()
             guard isTransient(error) else { throw error }
+            await onRetry()
             try await Task.sleep(nanoseconds: delay)
             return try await operation()
         }
@@ -174,17 +195,22 @@ extension ArtModeConnection {
     static func changeWithRetry(
         target: ArtModeState?,
         retryDelay: UInt64 = 750_000_000,
+        progress: TVCommandProgress = { _ in },
         connect: () throws -> ArtModeConnection,
         exitArt: @escaping () async throws -> Void
     ) async throws -> String {
         // Resolve a toggle once. A lost acknowledgement must not reverse the goal.
         var desired = target
-        return try await NetworkRetry.once(delay: retryDelay) {
+        return try await NetworkRetry.once(delay: retryDelay, onRetry: {
+            await progress("Network error. Retrying once…")
+        }) {
+            await progress("Connecting to TV’s Art controls…")
             let connection = try connect()
             defer { connection.close() }
             try await connection.connect()
+            await progress("Checking Art mode…")
             if desired == nil { desired = try await connection.status() == .on ? .off : .on }
-            return try await connection.setMode(desired!, exitArt: exitArt)
+            return try await connection.setMode(desired!, progress: progress, exitArt: exitArt)
         }
     }
 }

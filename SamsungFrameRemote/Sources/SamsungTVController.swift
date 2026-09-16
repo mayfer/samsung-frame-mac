@@ -64,12 +64,12 @@ actor SamsungTVController {
         return "Sent Art-to-HDMI sequence (KEY_SOURCE, KEY_RIGHT, KEY_ENTER)."
     }
 
-    func artModeOn(ip: String, mac: String? = nil) async throws -> String {
-        try await changeArtMode(ip: ip, target: .on, mac: mac)
+    func artModeOn(ip: String, mac: String? = nil, progress: TVCommandProgress = { _ in }) async throws -> String {
+        try await changeArtMode(ip: ip, target: .on, mac: mac, progress: progress)
     }
 
-    func artModeOff(ip: String, mac: String? = nil) async throws -> String {
-        try await changeArtMode(ip: ip, target: .off, mac: mac)
+    func artModeOff(ip: String, mac: String? = nil, progress: TVCommandProgress = { _ in }) async throws -> String {
+        try await changeArtMode(ip: ip, target: .off, mac: mac, progress: progress)
     }
 
     func powerOffKey(ip: String) async throws -> String {
@@ -357,15 +357,15 @@ actor SamsungTVController {
         }
     }
 
-    func changeArtMode(ip: String, target: ArtModeState? = nil, mac: String? = nil) async throws -> String {
-        let prepared = try await ArtWakePreparation.prepare(target: target, mac: mac, probe: {
+    func changeArtMode(ip: String, target: ArtModeState? = nil, mac: String? = nil, progress: TVCommandProgress = { _ in }) async throws -> String {
+        let prepared = try await ArtWakePreparation.prepare(target: target, mac: mac, progress: progress, probe: {
             guard let info = await self.fetchTVDeviceInfo(ip: ip) else { return .unreachable }
             let power = self.extractPowerState(from: info)
             return ["standby", "off"].contains(power ?? "") ? .standby : .awake
         }, wake: { address in
             try self.sendWOL(mac: address, ip: ip, port: 9)
         })
-        let result = try await ArtModeConnection.changeWithRetry(target: prepared.target, connect: {
+        let result = try await ArtModeConnection.changeWithRetry(target: prepared.target, progress: progress, connect: {
             try ArtModeConnection(ip: ip)
         }, exitArt: {
             try await self.sendRemoteKeys(ip: ip, keys: ["KEY_POWER"])

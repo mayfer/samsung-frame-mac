@@ -95,9 +95,12 @@ commands are not automatically replayed.
 
 ### Waking an offline TV from Art shortcuts
 
-Art commands check the TV first, retrying an unanswered reachability probe once.
-If the TV reports standby or remains unreachable, the app sends Wake-on-LAN to
-its saved MAC address and waits up to about 30 seconds for it to become ready.
+Art commands immediately send Wake-on-LAN when a MAC address is saved, before
+waiting for any network response. The status bar reports the packet send, checks,
+wake countdown, Art connection, transition, verification and any retry. If the
+first probe reports standby or cannot reach the TV, the app waits up to about
+30 seconds for readiness. Without a saved MAC, it checks reachability and explains
+how to enable wake if the TV is unavailable.
 An unreachable TV is not assumed to be definitely powered off; network outages
 produce a clear wake timeout rather than a blind power-button press.
 
@@ -110,3 +113,6 @@ produce a clear wake timeout rather than a blind power-button press.
 Save the TV's MAC under **TV → Connection details**. The TV must remain plugged
 in and connected to a network that supports waking it. Missing MAC addresses,
 failed packet sends and wake timeouts are reported in the activity log.
+
+Art WebSocket sends and receives each have a six-second transport timeout;
+cancellation closes the socket so a stalled operation releases the command UI.

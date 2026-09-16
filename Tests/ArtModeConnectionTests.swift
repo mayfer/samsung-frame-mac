@@ -44,6 +44,39 @@ final class FakeArtTransport: ArtTransport {
     }
 }
 
+final class StalledArtTransport: ArtTransport {
+    let stallSend: Bool
+    private let lock = NSLock()
+    private var closed = false
+    private var pending: CheckedContinuation<Void, Error>?
+    init(stallSend: Bool) { self.stallSend = stallSend }
+    func close() {
+        lock.lock()
+        closed = true
+        let continuation = pending
+        pending = nil
+        lock.unlock()
+        continuation?.resume(throwing: URLError(.cancelled))
+    }
+    private func stall() async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            lock.lock()
+            if closed {
+                lock.unlock()
+                continuation.resume(throwing: URLError(.cancelled))
+            } else {
+                pending = continuation
+                lock.unlock()
+            }
+        }
+    }
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        if !stallSend { try await stall() }
+        return .string("{\"event\":\"ms.channel.ready\"}")
+    }
+    func send(_ message: URLSessionWebSocketTask.Message) async throws { try await stall() }
+}
+
 @main
 struct ArtModeConnectionTests {
     static func main() async throws {
@@ -68,7 +101,11 @@ struct ArtModeConnectionTests {
         try await tests.testWakeNeedsMAC()
         try await tests.testWakeTimeoutStopsBeforeArtCommands()
         try await tests.testWakeSendFailureStopsImmediately()
-        print("Passed 20 Art protocol, retry and wake tests")
+        try await tests.testWakeAndStatusPrecedeFirstProbe()
+        try await tests.testWakeWaitReportsProgress()
+        try await tests.testStalledSendTimesOut()
+        try await tests.testStalledReceiveTimesOut()
+        print("Passed 24 Art protocol, retry, wake, progress and timeout tests")
     }
     func testEnterArtPreservesCurrentArtworkAndVerifiesState() async throws {
         let transport = FakeArtTransport()
@@ -91,10 +128,10 @@ struct ArtModeConnectionTests {
         let api = ArtModeConnection(transport: transport)
         try await api.connect()
         var presses = 0
-        _ = try await api.setMode(.off) {
+        _ = try await api.setMode(.off, exitArt: {
             presses += 1
             transport.state = "off"
-        }
+        })
         XCTAssertEqual(presses, 1)
         XCTAssertEqual(transport.requests.compactMap { $0["request"] as? String },
                        ["get_artmode_status", "get_artmode_status"])
@@ -131,12 +168,12 @@ struct ArtModeConnectionTests {
         let api = ArtModeConnection(transport: transport)
         try await api.connect()
         var pressed = false
-        let result = try await api.setMode(.off) {
+        let result = try await api.setMode(.off, exitArt: {
             XCTAssertEqual(transport.state, "on")
             XCTAssertEqual(transport.requests.count, 1)
             pressed = true
             transport.state = "off"
-        }
+        })
         XCTAssertTrue(pressed)
         XCTAssertEqual(result, "Confirmed: Art mode off.")
     }
@@ -144,7 +181,7 @@ struct ArtModeConnectionTests {
     func testAlreadyOffDoesNotTogglePower() async throws {
         let api = ArtModeConnection(transport: FakeArtTransport())
         try await api.connect()
-        _ = try await api.setMode(.off) { XCTFail("Must not toggle power when Art is already off") }
+        _ = try await api.setMode(.off, exitArt: { XCTFail("Must not toggle power when Art is already off") })
     }
 
     func testRemoteFailureDoesNotClaimSuccess() async throws {
@@ -153,7 +190,7 @@ struct ArtModeConnectionTests {
         let api = ArtModeConnection(transport: transport)
         try await api.connect()
         do {
-            _ = try await api.setMode(.off) { throw SamsungTVControllerError.message("Remote unavailable") }
+            _ = try await api.setMode(.off, exitArt: { throw SamsungTVControllerError.message("Remote unavailable") })
             XCTFail("Expected remote error")
         } catch {
             XCTAssertEqual(transport.state, "on")
@@ -308,9 +345,43 @@ struct ArtModeConnectionTests {
             }, wake: { _ in throw SamsungTVControllerError.message("Invalid MAC") }, pause: {})
             XCTFail("Expected wake send failure")
         } catch {
-            XCTAssertEqual(probes, 1)
+            XCTAssertEqual(probes, 0)
             XCTAssertTrue(error.localizedDescription.contains("Invalid MAC"))
         }
+    }
+
+    func testWakeAndStatusPrecedeFirstProbe() async throws {
+        var events: [String] = []
+        let prepared = try await ArtWakePreparation.prepare(target: nil, mac: "AA:BB:CC:DD:EE:FF",
+            progress: { events.append($0) }, probe: {
+                XCTAssertEqual(events, ["Sending Wake-on-LAN…", "packet", "Wake-on-LAN sent. Checking TV…"])
+                return .awake
+            }, wake: { _ in events.append("packet") }, pause: {})
+        XCTAssertTrue(prepared.sentWake)
+        XCTAssertEqual(prepared.target, nil)
+    }
+
+    func testWakeWaitReportsProgress() async throws {
+        var states: [TVWakeState] = [.standby, .awake]
+        var messages: [String] = []
+        let prepared = try await ArtWakePreparation.prepare(target: nil, mac: "AA:BB:CC:DD:EE:FF",
+            progress: { messages.append($0) }, probe: { states.removeFirst() }, wake: { _ in }, pause: {})
+        XCTAssertEqual(prepared.target, .off)
+        XCTAssertTrue(messages.contains { $0.contains("remaining") })
+        XCTAssertEqual(messages.last, "TV is responding. Checking Art mode…")
+    }
+
+    func testStalledSendTimesOut() async throws {
+        let api = ArtModeConnection(transport: StalledArtTransport(stallSend: true), transportTimeout: 10_000_000)
+        try await api.connect()
+        do { _ = try await api.status(); XCTFail("Expected send timeout") }
+        catch { XCTAssertEqual((error as NSError).code, URLError.timedOut.rawValue) }
+    }
+
+    func testStalledReceiveTimesOut() async throws {
+        let api = ArtModeConnection(transport: StalledArtTransport(stallSend: false), transportTimeout: 10_000_000)
+        do { try await api.connect(); XCTFail("Expected receive timeout") }
+        catch { XCTAssertEqual((error as NSError).code, URLError.timedOut.rawValue) }
     }
 
 }
